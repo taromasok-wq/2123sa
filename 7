@@ -1,0 +1,91 @@
+-- === CONFIGURATION ===
+local API_KEY = "AIzaSyCntT7fakpZSIxkLmcUspeYFnD9PvZTuK8"
+local MODEL = "gemini-3-flash-preview"
+local URL = "https://generativelanguage.googleapis.com/v1beta/models/" .. MODEL .. ":generateContent?key=" .. API_KEY
+
+-- TTS Settings (Google Engine)
+local TTS_URL = "https://music.madefor.cc/tts?engine=google&voice=en-gb-x-gbd-network&text="
+
+-- Find peripherals
+local speaker = peripheral.find("speaker")
+local dfpwm = require("cc.audio.dfpwm")
+
+if not speaker then
+    print("Warning: Speaker not found! Madam G will be silent.")
+end
+
+-- Function to play voice
+local function speak(text)
+    if not speaker then return end
+    
+    -- Requesting DFPWM audio from Google TTS proxy
+    local response = http.get(TTS_URL .. textutils.urlEncode(text))
+    if response then
+        local decoder = dfpwm.make_decoder()
+        while true do
+            local chunk = response.read(16 * 1024) -- Read in chunks
+            if not chunk then break end
+            local buffer = decoder(chunk)
+            
+            -- Wait until speaker is ready to play next chunk
+            while not speaker.playAudio(buffer) do
+                os.pullEvent("speaker_audio_empty")
+            end
+        end
+        response.close()
+    end
+end
+
+-- Function to get Gemini response
+local function askGemini(prompt)
+    local body = {
+        systemInstruction = {
+            parts = {{ text = "You are 'Madam G', a ruthless and bossy madam. You run the streets. You are cynical, use street slang, and call the user 'kid' or 'money-maker'. You have no patience for nonsense. IMPORTANT: Answer ONLY in English. Keep answers VERY SHORT (under 15 words) so the speaker doesn't lag."}}
+        },
+        contents = {
+            { role = "user", parts = {{ text = prompt }} }
+        }
+    }
+    
+    local response = http.post(URL, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+    
+    if not response then return "System's down, kid. Try later." end
+    
+    local data = textutils.unserializeJSON(response.readAll())
+    response.close()
+    
+    if data.candidates and data.candidates[1] then
+        return data.candidates[1].content.parts[1].text
+    end
+    return "I'm busy counting my diamonds."
+end
+
+-- === INTERFACE ===
+term.clear()
+term.setCursorPos(1,1)
+term.setTextColor(colors.red)
+print("MADAM G'S HEADQUARTERS")
+term.setTextColor(colors.gray)
+print("The boss is listening...")
+print("-----------------------")
+
+while true do
+    term.setTextColor(colors.white)
+    write("You: ")
+    local input = read()
+    
+    if input == "exit" then break end
+    
+    term.setTextColor(colors.red)
+    print("Thinking...")
+    
+    local answer = askGemini(input)
+    
+    term.setTextColor(colors.magenta)
+    print("\nMadam G: " .. answer)
+    
+    -- Start speaking
+    speak(answer)
+    
+    print("-----------------------")
+end
