@@ -1,0 +1,195 @@
+-- КОНФИГУРАЦИЯ
+local api_base_url = "http://193.23.221.140:8000" 
+local version = "2.1"
+
+-- ПЕРЕМЕННЫЕ ЭКРАНА
+local width, height = term.getSize()
+local tab = 2 -- Начинаем с поиска
+local waiting_for_input = false
+local last_search = nil
+local last_search_url = nil
+local search_results = nil
+local search_error = false
+local is_loading = false
+
+-- ПЕРЕМЕННЫЕ ПЛЕЕРА
+local playing = false
+local now_playing = nil
+local in_search_result = false
+local clicked_result = nil
+local volume = 1.5
+
+-- ПЕРЕМЕННЫЕ АУДИО
+local decoder = require "cc.audio.dfpwm".make_decoder()
+local speakers = { peripheral.find("speaker") }
+
+-- ТАБЛИЦА КИРИЛЛИЦЫ (Для системного текста)
+local cyrillic_map = {
+    ["А"] = "\191", ["Б"] = "\192", ["В"] = "\193", ["Г"] = "\194", ["Д"] = "\195",
+    ["Е"] = "\196", ["Ё"] = "\197", ["Ж"] = "\198", ["З"] = "\199", ["И"] = "\200",
+    ["Й"] = "\201", ["К"] = "\202", ["Л"] = "\203", ["М"] = "\204", ["Н"] = "\205",
+    ["О"] = "\206", ["П"] = "\207", ["Р"] = "\208", ["С"] = "\209", ["Т"] = "\210",
+    ["У"] = "\211", ["Ф"] = "\212", ["Х"] = "\213", ["Ц"] = "\214", ["Ч"] = "\215",
+    ["Ш"] = "\216", ["Щ"] = "\217", ["Ъ"] = "\218", ["Ы"] = "\219", ["Ь"] = "\220",
+    ["Э"] = "\221", ["Ю"] = "\222", ["Я"] = "\223",
+    ["а"] = "\224", ["б"] = "\225", ["в"] = "\226", ["г"] = "\227", ["д"] = "\228",
+    ["е"] = "\229", ["ё"] = "\230", ["ж"] = "\231", ["з"] = "\232", ["и"] = "\233",
+    ["й"] = "\234", ["к"] = "\235", ["л"] = "\236", ["м"] = "\237", ["н"] = "\238",
+    ["о"] = "\239", ["п"] = "\240", ["р"] = "\241", ["с"] = "\242", ["т"] = "\243",
+    ["у"] = "\244", ["ф"] = "\245", ["х"] = "\246", ["ц"] = "\247", ["ч"] = "\248",
+    ["ш"] = "\249", ["щ"] = "\250", ["ъ"] = "\251", ["ы"] = "\252", ["ь"] = "\253",
+    ["э"] = "\254", ["ю"] = "\255", ["я"] = "\13"
+}
+
+-- Итератор UTF-8
+local function utf8_iter(str)
+    local i = 1
+    return function()
+        if i > #str then return nil end
+        local c = string.byte(str, i)
+        local len = (c < 0x80) and 1 or (c < 0xE0) and 2 or (c < 0xF0) and 3 or 4
+        local char = string.sub(str, i, i + len - 1)
+        i = i + len
+        return char
+    end
+end
+
+-- Перевод текста из кода в ресурспак
+local function T(str)
+    if not str or type(str) ~= "string" then return str end
+    local res = {}
+    for char in utf8_iter(str) do
+        table.insert(res, cyrillic_map[char] or char)
+    end
+    return table.concat(res)
+end
+
+-- Отрисовка
+function redrawScreen()
+    if waiting_for_input then return end
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    
+    -- Вкладки
+    term.setCursorPos(1,1); term.setBackgroundColor(colors.gray); term.clearLine()
+    local tabs = {T(" Сейчас играет "), T(" Поиск ")}
+    for i=1,#tabs do
+        term.setBackgroundColor(tab == i and colors.white or colors.gray)
+        term.setTextColor(tab == i and colors.black or colors.white)
+        term.setCursorPos((math.floor((width/#tabs)*(i-0.5)))-math.ceil(#tabs[i]/2)+1, 1)
+        term.write(tabs[i])
+    end
+
+    if tab == 1 then
+        term.setBackgroundColor(colors.black)
+        if now_playing then
+            term.setCursorPos(2,3); term.setTextColor(colors.white); term.write(now_playing.name)
+            term.setCursorPos(2,4); term.setTextColor(colors.lightGray); term.write(now_playing.artist)
+        else
+            term.setTextColor(colors.lightGray); term.setCursorPos(2,3); term.write(T("Тишина..."))
+        end
+    elseif tab == 2 then
+        if in_search_result then
+            term.setBackgroundColor(colors.black); term.clear()
+            term.setTextColor(colors.white); term.setCursorPos(2,2); term.write(search_results[clicked_result].name)
+            term.setCursorPos(2,6); term.setBackgroundColor(colors.gray); term.write(T("  Играть сейчас  "))
+            term.setCursorPos(2,13); term.write(T("  Назад  "))
+        else
+            -- Строка поиска
+            paintutils.drawFilledBox(2,3,width-1,5,colors.lightGray)
+            term.setBackgroundColor(colors.lightGray); term.setTextColor(colors.black)
+            term.setCursorPos(3,4); term.write(last_search and T(last_search) or T("Поиск..."))
+            
+            -- Статусы и результаты
+            term.setBackgroundColor(colors.black)
+            if is_loading then
+                term.setTextColor(colors.yellow); term.setCursorPos(2,7); term.write(T("Загрузка данных..."))
+            elseif search_error then
+                term.setTextColor(colors.red); term.setCursorPos(2,7); term.write(T("Ошибка соединения"))
+            elseif search_results then
+                if #search_results == 0 then
+                    term.setTextColor(colors.gray); term.setCursorPos(2,7); term.write(T("Ничего не найдено"))
+                else
+                    for i=1, #search_results do
+                        term.setTextColor(colors.white); term.setCursorPos(2,7+(i-1)*2); term.write(search_results[i].name)
+                        term.setTextColor(colors.lightGray); term.setCursorPos(2,8+(i-1)*2); term.write(search_results[i].artist)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Обработка UI
+function uiLoop()
+    redrawScreen()
+    while true do
+        local ev, btn, x, y = os.pullEvent()
+        if ev == "mouse_click" and btn == 1 then
+            if y == 1 then
+                tab = (x < width/2) and 1 or 2
+                in_search_result = false; redrawScreen()
+            elseif tab == 2 and not in_search_result then
+                if y >= 3 and y <= 5 then
+                    term.setCursorPos(3,4); term.setBackgroundColor(colors.white); term.clearLine()
+                    waiting_for_input = true
+                    local inp = read()
+                    if #inp > 0 then
+                        last_search = inp
+                        last_search_url = api_base_url .. "?search=" .. textutils.urlEncode(inp)
+                        is_loading = true; search_error = false; search_results = nil
+                        http.request({ url = last_search_url, binary = true })
+                    end
+                    waiting_for_input = false; redrawScreen()
+                elseif search_results then
+                    for i=1,#search_results do
+                        if y == 7+(i-1)*2 or y == 8+(i-1)*2 then
+                            clicked_result = i; in_search_result = true; redrawScreen()
+                        end
+                    end
+                end
+            elseif tab == 2 and in_search_result then
+                if y == 6 then -- Play song
+                    now_playing = search_results[clicked_result]
+                    playing = true; in_search_result = false; tab = 1; redrawScreen()
+                    os.queueEvent("audio_update")
+                elseif y == 13 then in_search_result = false; redrawScreen() end
+            end
+        elseif ev == "redraw_screen" then redrawScreen() end
+    end
+end
+
+-- Обработка HTTP
+function httpLoop()
+    while true do
+        local ev, url, handle = os.pullEvent()
+        if ev == "http_success" then
+            if url == last_search_url then
+                local data = handle.readAll()
+                handle.close()
+                local ok, result = pcall(textutils.unserialiseJSON, data)
+                if ok and result then
+                    search_results = result
+                    search_error = false
+                else
+                    search_error = true
+                end
+                is_loading = false; os.queueEvent("redraw_screen")
+            end
+        elseif ev == "http_failure" then
+            if url == last_search_url then
+                is_loading = false; search_error = true; os.queueEvent("redraw_screen")
+            end
+        end
+    end
+end
+
+-- Пустой луп аудио (для структуры)
+function audioLoop()
+    while true do
+        os.pullEvent("audio_update")
+        -- Здесь будет твоя логика speakers.playAudio
+    end
+end
+
+parallel.waitForAny(uiLoop, httpLoop, audioLoop)
