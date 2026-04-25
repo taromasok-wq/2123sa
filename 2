@@ -1,56 +1,58 @@
--- === НАСТРОЙКИ ===
--- Вставьте ваш API ключ между кавычками!
+-- === SETTINGS ===
+-- Paste your API key inside the quotes!
 local API_KEY = "AIzaSyCntT7fakpZSIxkLmcUspeYFnD9PvZTuK8"
-local MODEL = "gemini-3-flash-preview" -- Используем быструю и дешевую модель
+local MODEL = "gemini-3-flash-preview"
 local URL = "https://generativelanguage.googleapis.com/v1beta/models/" .. MODEL .. ":generateContent?key=" .. API_KEY
 
--- Проверка доступности интернета в моде
+-- Check if HTTP is enabled
 if not http then
-    print("Ошибка: HTTP API отключен в настройках ComputerCraft!")
+    print("Error: HTTP API is disabled in ComputerCraft config!")
     return
 end
 
--- История диалога для сохранения контекста
+-- Chat history for context
 local chat_history = {}
 
--- Функция отправки запроса к Gemini
+-- Function to send request to Gemini
 local function askGemini(prompt)
-    -- Добавляем сообщение пользователя в историю
     table.insert(chat_history, {
         role = "user",
         parts = {{ text = prompt }}
     })
 
-    local body = { contents = chat_history }
+    -- We add a system instruction to force Gemini to use English only
+    -- because ComputerCraft does not support Cyrillic/Unicode characters.
+    local body = {
+        systemInstruction = {
+            parts = {{ text = "You are inside a Minecraft ComputerCraft terminal. It ONLY supports standard English ASCII characters. You MUST NEVER use Cyrillic, Russian, or any other non-English characters. Answer entirely in English."}}
+        },
+        contents = chat_history
+    }
+    
     local jsonBody = textutils.serializeJSON(body)
     local headers = { ["Content-Type"] = "application/json" }
 
-    -- Отправляем POST запрос
+    -- Send POST request
     local response, err = http.post(URL, jsonBody, headers)
     
-    -- Обработка сетевых ошибок
     if not response then
-        table.remove(chat_history) -- Удаляем сообщение из истории, если запрос не удался
-        return "Ошибка сети: " .. tostring(err)
+        table.remove(chat_history)
+        return "Network Error: " .. tostring(err)
     end
     
     local responseText = response.readAll()
     response.close()
     
-    -- Декодируем ответ из JSON
     local data = textutils.unserializeJSON(responseText)
     
-    -- Проверка на ошибки со стороны API
     if data.error then
         table.remove(chat_history)
-        return "Ошибка API: " .. tostring(data.error.message)
+        return "API Error: " .. tostring(data.error.message)
     end
     
-    -- Извлекаем текст ответа
     if data.candidates and data.candidates[1] and data.candidates[1].content then
         local answer = data.candidates[1].content.parts[1].text
         
-        -- Сохраняем ответ нейросети в историю диалога
         table.insert(chat_history, {
             role = "model",
             parts = {{ text = answer }}
@@ -59,46 +61,46 @@ local function askGemini(prompt)
         return answer
     else
         table.remove(chat_history)
-        return "Неизвестный формат ответа от сервера."
+        return "Unknown response format from server."
     end
 end
 
--- === ИНТЕРФЕЙС ЧАТА ===
+-- === CHAT INTERFACE ===
 term.clear()
 term.setCursorPos(1, 1)
 term.setTextColor(colors.lightBlue)
 print("=================================")
-print("       Чат с Google Gemini       ")
+print("       Gemini AI Chat            ")
 print("=================================")
 term.setTextColor(colors.gray)
-print("Напишите 'exit' для выхода.")
-print("Напишите 'clear' для очистки памяти.\n")
+print("Type 'exit' to quit.")
+print("Type 'clear' to reset memory.\n")
 term.setTextColor(colors.white)
 
 while true do
-    -- Ввод пользователя
+    -- User input
     term.setTextColor(colors.yellow)
-    write("Вы: ")
+    write("You: ")
     term.setTextColor(colors.white)
     
     local input = read()
     
     if input == "exit" then
-        print("Завершение работы...")
+        print("Shutting down...")
         break
     elseif input == "clear" then
         chat_history = {}
         term.setTextColor(colors.green)
-        print("[История диалога очищена]\n")
+        print("[Chat history cleared]\n")
         term.setTextColor(colors.white)
     elseif input ~= "" then
         term.setTextColor(colors.gray)
-        print("Gemini печатает...")
+        print("Gemini is typing...")
         
-        -- Получаем ответ
+        -- Get response
         local answer = askGemini(input)
         
-        -- Выводим ответ
+        -- Print response
         term.setTextColor(colors.cyan)
         print("\nGemini: ")
         term.setTextColor(colors.white)
