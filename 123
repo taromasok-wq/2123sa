@@ -1,0 +1,115 @@
+-- === CONFIGURATION ===
+local MODEL = "openai" -- Возвращаем openai, он адекватнее отвечает на "Hi"
+
+-- TTS Config 
+local VOICE = "en-US-Standard-D" 
+local TTS_BASE_URL = "https://music.madefor.cc/tts?voice=" .. VOICE .. "&text="
+
+-- Peripherals
+local speaker = peripheral.find("speaker")
+local dfpwm = require("cc.audio.dfpwm")
+
+if not speaker then 
+    error("Don V needs a Speaker to talk!", 0) 
+end
+
+-- 1. Function to play audio
+local function speak(message)
+    local cleanMessage = message:gsub("\n", " "):gsub("[%c]", "")
+    local url = TTS_BASE_URL .. textutils.urlEncode(cleanMessage)
+    
+    local response, err = http.get { url = url, binary = true }
+    
+    if not response then
+        local fallbackUrl = "https://music.madefor.cc/tts?text=" .. textutils.urlEncode(cleanMessage)
+        response, err = http.get { url = fallbackUrl, binary = true }
+    end
+
+    if not response then
+        print("Voice Warning: Audio unavailable right now.")
+        return
+    end
+
+    local decoder = dfpwm.make_decoder()
+    while true do
+        local chunk = response.read(16 * 1024)
+        if not chunk then break end
+
+        local buffer = decoder(chunk)
+        while not speaker.playAudio(buffer) do
+            os.pullEvent("speaker_audio_empty")
+        end
+    end
+    response.close()
+end
+
+-- 2. Text Cleaner (Удаляет кракозябры и чинит текст для Minecraft)
+local function cleanText(str)
+    -- Чиним баги API
+    str = str:gsub("\\n", "\n") 
+    str = str:gsub('\\"', '"')
+    str = str:gsub(',"tool_calls"%:%[%]', "")
+    
+    -- Заменяем "умные" UTF-8 символы (из-за которых были кракозябры) на обычные
+    str = str:gsub("’", "'"):gsub("‘", "'")
+    str = str:gsub("”", '"'):gsub("“", '"')
+    str = str:gsub("—", "-")
+    str = str:gsub("…", "...")
+    
+    -- Убираем лишние кавычки в начале и конце
+    if str:sub(1,1) == '"' and str:sub(-1,-1) == '"' then
+        str = str:sub(2, -2)
+    end
+    return str
+end
+
+-- 3. Function to get text using Simple GET URL
+local function askAI(prompt)
+    local systemInstruction = "You are 'Don V', an underworld information broker. " ..
+    "RULES: 1. If user just greets you (like 'Hi'), reply with a VERY short greeting. " ..
+    "2. For real questions, keep answers highly informative but CONCISE (max 3-4 sentences). " ..
+    "3. DO NOT output JSON or markdown. " ..
+    "4. Use ONLY standard basic ASCII characters. NO smart quotes. " ..
+    "5. Call user 'kid' or 'rookie'."
+
+    local url = "https://text.pollinations.ai/" .. MODEL .. "/" 
+        .. textutils.urlEncode(prompt) 
+        .. "?system=" .. textutils.urlEncode(systemInstruction)
+
+    local response, err = http.get(url)
+    
+    if response then
+        local text = response.readAll()
+        response.close()
+        return cleanText(text)
+    else
+        return "Connection error: " .. tostring(err)
+    end
+end
+
+-- === MAIN INTERFACE ===
+term.clear()
+term.setCursorPos(1,1)
+
+while true do
+    term.setTextColor(colors.white)
+    write("You: ")
+    local input = read()
+    
+    if input == "exit" then break end
+
+    -- Get Text
+    term.setTextColor(colors.yellow)
+    print("Don V is checking his sources...")
+    local answer = askAI(input)
+    
+    -- Print Text 
+    term.setTextColor(colors.lightGray)
+    print("\nDon V: " .. answer .. "\n")
+    
+    -- Play Voice
+    speak(answer)
+    
+    term.setTextColor(colors.white)
+    print("--------------------------")
+end
