@@ -1,0 +1,50 @@
+local api_url = "https://ipod-2to6magyna-uc.a.run.app/?v=2.1&search=" .. textutils.urlEncode("стрикало")
+
+print("--- 1. Тест локальной кодировки ---")
+local test_str = "Привет"
+print("Длина строки 'Привет': " .. #test_str) 
+-- Если 6 (ASCII) - плохо, если 12 (UTF-8) - ок.
+
+print("\n--- 2. HTTP Запрос (бинарный режим) ---")
+local handle = http.get({ url = api_url, binary = true })
+if not handle then
+    print("Ошибка: не удалось подключиться к API")
+else
+    local raw_data = handle.readAll()
+    handle.close()
+    
+    print("Получено байт: " .. #raw_data)
+    
+    -- Ищем первый попавшийся фрагмент в байтах
+    print("\n--- 3. HEX-анализ данных (первые 200 байт) ---")
+    local hex_dump = ""
+    local char_dump = ""
+    for i = 1, math.min(200, #raw_data) do
+        local b = string.byte(raw_data, i)
+        hex_dump = hex_dump .. string.format("%02X ", b)
+        char_dump = char_dump .. (b > 31 and b < 127 and string.char(b) or ".")
+    end
+    print(hex_dump)
+    
+    -- ПРОВЕРКА: Если в HEX-дампе видишь 3F 3F 3F -- это знаки вопроса '???'
+    -- Если видишь D0 xx или D1 xx -- это живой UTF-8!
+    
+    local is_broken = raw_data:find("???") or raw_data:find("\63\63\63")
+    if is_broken then
+        print("\nИТОГ: Данные ПРИХОДЯТ битыми (3F hex). Проблема в HTTP-клиенте или прокси сервера.")
+    else
+        print("\nИТОГ: В сырых данных есть UTF-8 (D0/D1). Проблема в JSON или отрисовке.")
+    end
+
+    print("\n--- 4. Тест JSON-декодера ---")
+    local ok, table = pcall(textutils.unserialiseJSON, raw_data)
+    if not ok then
+        print("JSON не распарсился")
+    else
+        local name = table[1] and table[1].name or "nil"
+        print("Первое имя из JSON: " .. name)
+        print("Байты первого имени: ")
+        for i=1, #name do io.write(string.format("%02X ", name:byte(i))) end
+        print()
+    end
+end
