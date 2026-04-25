@@ -1,0 +1,73 @@
+-- === CONFIGURATION ===
+local API_KEY = "AIzaSyCntT7fakpZSIxkLmcUspeYFnD9PvZTuK8"
+local MODEL = "gemini-3-flash-preview"
+-- Параметр speed=1.0 - нормальная скорость, если голос неразборчив, ставь 0.9
+local TTS_BASE_URL = "https://music.madefor.cc/tts?voice=en-US-Standard-D&speed=1.0&text="
+
+local speaker = peripheral.find("speaker")
+local dfpwm = require("cc.audio.dfpwm")
+
+-- Таблица для транслита
+local ru2en = {
+    ['а']='a', ['б']='b', ['в']='v', ['г']='g', ['д']='d', ['е']='e', ['ё']='yo', ['ж']='zh',
+    ['з']='z', ['и']='i', ['й']='j', ['к']='k', ['л']='l', ['м']='m', ['н']='n', ['о']='o',
+    ['п']='p', ['р']='r', ['с']='s', ['т']='t', ['у']='u', ['ф']='f', ['х']='kh', ['ц']='ts',
+    ['ч']='ch', ['ш']='sh', ['щ']='shch', ['ы']='y', ['э']='e', ['ю']='yu', ['я']='ya'
+}
+
+local function toTranslit(text)
+    local res = ""
+    local lower = text:lower()
+    for i=1, #lower do
+        local char = lower:sub(i,i)
+        res = res .. (ru2en[char] or char)
+    end
+    return res
+end
+
+local function speak(message)
+    local url = TTS_BASE_URL .. textutils.urlEncode(message)
+    local response, err = http.get { url = url, binary = true }
+    if response then
+        local decoder = dfpwm.make_decoder()
+        while true do
+            local chunk = response.read(16 * 1024)
+            if not chunk then break end
+            while not speaker.playAudio(decoder(chunk)) do os.pullEvent("speaker_audio_empty") end
+        end
+        response.close()
+    end
+end
+
+local function askG(prompt)
+    local url = "https://generativelanguage.googleapis.com/v1beta/models/" .. MODEL .. ":generateContent?key=" .. API_KEY
+    local body = {
+        systemInstruction = {
+            parts = {{ text = "You are G, a cold logic-based AI robot. Speak only in Russian transliteration. Be brief, answer in 5-7 words maximum. No emotions, just facts." }}
+        },
+        contents = {{ role = "user", parts = {{ text = prompt }} }}
+    }
+    local response = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+    local data = textutils.unserializeJSON(response.readAll())
+    return data.candidates[1].content.parts[1].text
+end
+
+-- === MAIN LOOP ===
+term.clear()
+term.setCursorPos(1,1)
+print("G SYSTEM READY")
+
+while true do
+    term.setTextColor(colors.white)
+    write("User: ")
+    local input = read()
+    if input == "exit" then break end
+
+    local answer = askG(input)
+    local translitAnswer = toTranslit(answer)
+    
+    term.setTextColor(colors.yellow)
+    print("\nG: " .. translitAnswer)
+    
+    speak(translitAnswer)
+end
