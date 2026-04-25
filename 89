@@ -1,0 +1,108 @@
+-- === CONFIGURATION ===
+local API_KEY = "AIzaSyCntT7fakpZSIxkLmcUspeYFnD9PvZTuK8"
+local GEMINI_MODEL = "gemini-3-flash-preview"
+
+-- TTS Voice Settings (Madam G Style)
+local VOICE_NAME = "en-US-Wavenet-H" -- Дорогой женский голос
+local LANGUAGE_CODE = "en-US"
+
+-- Peripherals
+local speaker = peripheral.find("speaker")
+if not speaker then error("Connect a Speaker!") end
+
+-- Base64 Decoder (Required for official Google API)
+local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+function decodeBase64(data)
+    data = string.gsub(data, '[^'..b..'=]', '')
+    return (data:gsub('.', function(x)
+        if (x == '=') then return '' end
+        local r,f='',(b:find(x)-1)
+        for i=6,1,-1 do r=r..(f%2^i-f%2^(i-1)>0 and '1' or '0') end
+        return r;
+    end):gsub('%d%d%d%d%d%d%d%d', function(x)
+        return string.char(tonumber(x,2))
+    end))
+end
+
+-- Function to play RAW PCM (Linear16) returned by Google
+local function playPCM(audioData)
+    -- Google Linear16 is 16-bit. CC Speaker needs 8-bit PCM.
+    -- We convert it by taking every second byte (crude but works for CC)
+    local pcm8 = {}
+    for i = 1, #audioData, 2 do
+        local b1 = string.byte(audioData, i)
+        local b2 = string.byte(audioData, i+1) or 0
+        -- Convert 16-bit signed to 8-bit signed
+        local sample = b2
+        if sample > 127 then sample = sample - 256 end
+        table.insert(pcm8, sample)
+        
+        -- Play when buffer is full
+        if #pcm8 >= 16000 then
+            while not speaker.playAudio(pcm8) do os.pullEvent("speaker_audio_empty") end
+            pcm8 = {}
+        end
+    end
+    if #pcm8 > 0 then
+        while not speaker.playAudio(pcm8) do os.pullEvent("speaker_audio_empty") end
+    end
+end
+
+-- 1. Get Response from Gemini
+local function askGemini(prompt)
+    local url = "https://generativelanguage.googleapis.com/v1beta/models/" .. GEMINI_MODEL .. ":generateContent?key=" .. API_KEY
+    local body = {
+        systemInstruction = {
+            parts = {{ text = "You are 'Madam G', a gritty, high-class underworld madam. You are bossy and use street slang like 'kid' or 'honey'. IMPORTANT: Speak ONLY in English ASCII. Keep answers very short (max 10 words)." }}
+        },
+        contents = {{ role = "user", parts = {{ text = prompt }} }}
+    }
+    local response = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+    if not response then return "I'm busy, kid." end
+    local data = textutils.unserializeJSON(response.readAll())
+    return data.candidates[1].content.parts[1].text
+end
+
+-- 2. Synthesize Speech via Google Cloud TTS
+local function speak(text)
+    local url = "https://texttospeech.googleapis.com/v1/text:synthesize?key=" .. API_KEY
+    local body = {
+        input = { text = text },
+        voice = { languageCode = LANGUAGE_CODE, name = VOICE_NAME },
+        audioConfig = { audioEncoding = "LINEAR16", sampleRateHertz = 16000 }
+    }
+    
+    print("Madam G is clearing her throat...")
+    local response = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+    
+    if response then
+        local data = textutils.unserializeJSON(response.readAll())
+        response.close()
+        if data.audioContent then
+            local rawAudio = decodeBase64(data.audioContent)
+            playPCM(rawAudio)
+        end
+    else
+        print("Voice box broken...")
+    end
+end
+
+-- === MAIN LOOP ===
+term.clear()
+term.setCursorPos(1,1)
+term.setTextColor(colors.magenta)
+print("--- MADAM G'S BACKROOM ---")
+
+while true do
+    term.setTextColor(colors.white)
+    write("\nYou: ")
+    local input = read()
+    if input == "exit" then break end
+
+    local answer = askGemini(input)
+    
+    term.setTextColor(colors.magenta)
+    print("\nMadam G: " .. answer)
+    
+    speak(answer)
+end
