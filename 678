@@ -1,0 +1,106 @@
+-- === CONFIGURATION ===
+local API_KEY = "AIzaSyCntT7fakpZSIxkLmcUspeYFnD9PvZTuK8"
+local MODEL = "gemini-3-flash-preview"
+
+-- TTS Config (Используем твой рабочий метод)
+-- Голос 'en-gb-x-gdb-network' звучит как строгая британская леди
+-- Используем более стабильный женский голос (Standard)
+local VOICE = "en-US-Standard-C" 
+local TTS_BASE_URL = "https://music.madefor.cc/tts?voice=" .. VOICE .. "&text="
+
+-- Peripherals
+local speaker = peripheral.find("speaker")
+local dfpwm = require("cc.audio.dfpwm")
+
+if not speaker then 
+    error("Madam G needs a Speaker to talk!", 0) 
+end
+
+-- 1. Function to play audio (based on your snippet)
+local function speak(message)
+    -- Убираем переносы строк и странные символы, которые ломают URL
+    local cleanMessage = message:gsub("\n", " "):gsub("[%c]", "")
+    
+    local url = TTS_BASE_URL .. textutils.urlEncode(cleanMessage)
+    local response, err = http.get { url = url, binary = true }
+    
+    if not response then
+        -- Если Standard голос не сработал, пробуем вообще без указания голоса (дефолт)
+        local fallbackUrl = "https://music.madefor.cc/tts?text=" .. textutils.urlEncode(cleanMessage)
+        response, err = http.get { url = fallbackUrl, binary = true }
+    end
+
+    if not response then
+        print("Voice Error: " .. tostring(err))
+        return
+    end
+
+    local decoder = dfpwm.make_decoder()
+    while true do
+        local chunk = response.read(16 * 1024)
+        if not chunk then break end
+
+        local buffer = decoder(chunk)
+        while not speaker.playAudio(buffer) do
+            os.pullEvent("speaker_audio_empty")
+        end
+    end
+    response.close()
+end
+
+-- 2. Function to get text from Gemini
+local function askGemini(prompt)
+    local url = "https://generativelanguage.googleapis.com/v1beta/models/" .. MODEL .. ":generateContent?key=" .. API_KEY
+    
+    local body = {
+        systemInstruction = {
+            parts = {{ text = "You are 'Madam G', a gritty underworld madam. You are bossy, cynical, and use street slang. You call the user 'kid'. IMPORTANT: Answer in English only. Keep answers under 15 words so the audio stays fast." }}
+        },
+        contents = {{ role = "user", parts = {{ text = prompt }} }}
+    }
+
+    local response, err = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+    
+    if not response then
+        return "Error: " .. tostring(err) -- Теперь мы увидим реальную ошибку, если она есть
+    end
+
+    local data = textutils.unserializeJSON(response.readAll())
+    response.close()
+
+    if data.error then
+        return "API Error: " .. data.error.message
+    end
+
+    return data.candidates[1].content.parts[1].text
+end
+
+-- === MAIN INTERFACE ===
+term.clear()
+term.setCursorPos(1,1)
+term.setTextColor(colors.magenta)
+print("--- MADAM G'S BACKROOM ---")
+term.setTextColor(colors.gray)
+print("The boss is in. What do you want?")
+print("--------------------------")
+
+while true do
+    term.setTextColor(colors.white)
+    write("You: ")
+    local input = read()
+    
+    if input == "exit" then break end
+
+    -- Get Text
+    term.setTextColor(colors.magenta)
+    print("Madam G is thinking...")
+    local answer = askGemini(input)
+    
+    -- Print Text
+    print("\nMadam G: " .. answer)
+    
+    -- Play Voice
+    speak(answer)
+    
+    print("--------------------------")
+end
