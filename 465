@@ -1,0 +1,110 @@
+-- === CONFIGURATION ===
+local API_KEY = "AIzaSyCntT7fakpZSIxkLmcUspeYFnD9PvZTuK8"
+local GEMINI_CHAT_MODEL = "gemini-3.0-flash-preview"
+local GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+
+-- Madam G Voice Config
+local VOICE_NAME = "Callirrhoe" -- Женский голос из списка Gemini-TTS
+local TTS_STYLE_PROMPT = "You are a tough, cynical underworld madam. Your voice is gritty, mature, and bossy. Speak with a slight street accent."
+
+-- Peripherals
+local speaker = peripheral.find("speaker")
+local dfpwm = require("cc.audio.dfpwm")
+if not speaker then error("Attach a Speaker!") end
+
+-- Base64 Decoder
+local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+function decodeBase64(data)
+    data = string.gsub(data, '[^'..b..'=]', '')
+    return (data:gsub('.', function(x)
+        if (x == '=') then return '' end
+        local r,f='',(b:find(x)-1)
+        for i=6,1,-1 do r=r..(f%2^i-f%2^(i-1)>0 and '1' or '0') end
+        return r;
+    end):gsub('%d%d%d%d%d%d%d%d', function(x)
+        return string.char(tonumber(x,2))
+    end))
+end
+
+-- Play 16-bit Linear16 from Gemini-TTS on 8-bit CC Speaker
+local function playAudio(audioData)
+    local pcm8 = {}
+    for i = 1, #audioData, 2 do
+        local b2 = string.byte(audioData, i+1) or 0
+        local sample = b2
+        if sample > 127 then sample = sample - 256 end
+        table.insert(pcm8, sample)
+        
+        if #pcm8 >= 16000 then
+            while not speaker.playAudio(pcm8) do os.pullEvent("speaker_audio_empty") end
+            pcm8 = {}
+        end
+    end
+    if #pcm8 > 0 then
+        while not speaker.playAudio(pcm8) do os.pullEvent("speaker_audio_empty") end
+    end
+end
+
+-- 1. Chat with Gemini (The Brains)
+local function askGemini(prompt)
+    local url = "https://generativelanguage.googleapis.com/v1beta/models/" .. GEMINI_CHAT_MODEL .. ":generateContent?key=" .. API_KEY
+    local body = {
+        systemInstruction = {
+            parts = {{ text = "You are 'Madam G', a bossy underworld madam. Use street slang. IMPORTANT: You can use audio tags like [sigh], [laughing], [uhm], or [sarcasm] in your text to express emotion. Keep answers under 15 words." }}
+        },
+        contents = {{ role = "user", parts = {{ text = prompt }} }}
+    }
+    local response = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+    if not response then return "I'm busy, kid." end
+    local data = textutils.unserializeJSON(response.readAll())
+    return data.candidates[1].content.parts[1].text
+end
+
+-- 2. Speak with Gemini-TTS (The Voice)
+local function speak(text)
+    local url = "https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=" .. API_KEY
+    local body = {
+        input = { 
+            text = text,
+            prompt = TTS_STYLE_PROMPT -- Тот самый новый стилевой промпт!
+        },
+        voice = { 
+            languageCode = "en-US", 
+            name = VOICE_NAME,
+            modelName = GEMINI_TTS_MODEL -- Используем новую превью модель
+        },
+        audioConfig = { 
+            audioEncoding = "LINEAR16", 
+            sampleRateHertz = 24000 
+        }
+    }
+    
+    local response = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+    if response then
+        local data = textutils.unserializeJSON(response.readAll())
+        response.close()
+        if data.audioContent then
+            playAudio(decodeBase64(data.audioContent))
+        end
+    end
+end
+
+-- === INTERFACE ===
+term.clear()
+term.setCursorPos(1,1)
+term.setTextColor(colors.magenta)
+print("--- MADAM G'S CLUB (GEMINI-TTS 3.1) ---")
+
+while true do
+    term.setTextColor(colors.white)
+    write("\nYou: ")
+    local input = read()
+    if input == "exit" then break end
+
+    local answer = askGemini(input)
+    
+    term.setTextColor(colors.magenta)
+    print("\nMadam G: " .. answer)
+    
+    speak(answer)
+end
