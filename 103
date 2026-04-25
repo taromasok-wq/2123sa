@@ -1,0 +1,236 @@
+local api_base_url = "https://ipod-2to6magyna-uc.a.run.app/"
+local version = "2.1"
+
+local width, height = term.getSize()
+local tab = 1
+
+local waiting_for_input = false
+local last_search = nil
+local last_search_url = nil
+local search_results = nil
+local search_error = false
+local in_search_result = false
+local clicked_result = nil
+
+local playing = false
+local queue = {}
+local now_playing = nil
+local looping = 0
+local volume = 1.5
+
+local playing_id = nil
+local last_download_url = nil
+local playing_status = 0
+local is_loading = false
+local is_error = false;
+
+local decoder = require "cc.audio.dfpwm".make_decoder()
+local needs_next_chunk = 0
+local player_handle, start, size, buffer
+
+-- ТАБЛИЦА СИМВОЛОВ (UTF-8 ключи -> Коды ресурс-пака)
+local cyrillic_map = {
+    ["А"] = "\191", ["Б"] = "\192", ["В"] = "\193", ["Г"] = "\194", ["Д"] = "\195",
+    ["Е"] = "\196", ["Ё"] = "\197", ["Ж"] = "\198", ["З"] = "\199", ["И"] = "\200",
+    ["Й"] = "\201", ["К"] = "\202", ["Л"] = "\203", ["М"] = "\204", ["Н"] = "\205",
+    ["О"] = "\206", ["П"] = "\207", ["Р"] = "\208", ["С"] = "\209", ["Т"] = "\210",
+    ["У"] = "\211", ["Ф"] = "\212", ["Х"] = "\213", ["Ц"] = "\214", ["Ч"] = "\215",
+    ["Ш"] = "\216", ["Щ"] = "\217", ["Ъ"] = "\218", ["Ы"] = "\219", ["Ь"] = "\220",
+    ["Э"] = "\221", ["Ю"] = "\222", ["Я"] = "\223",
+    ["а"] = "\224", ["б"] = "\225", ["в"] = "\226", ["г"] = "\227", ["д"] = "\228",
+    ["е"] = "\229", ["ё"] = "\230", ["ж"] = "\231", ["з"] = "\232", ["и"] = "\233",
+    ["й"] = "\234", ["к"] = "\235", ["л"] = "\236", ["м"] = "\237", ["н"] = "\238",
+    ["о"] = "\239", ["п"] = "\240", ["р"] = "\241", ["с"] = "\242", ["т"] = "\243",
+    ["у"] = "\244", ["ф"] = "\245", ["х"] = "\246", ["ц"] = "\247", ["ч"] = "\248",
+    ["ш"] = "\249", ["щ"] = "\250", ["ъ"] = "\251", ["ы"] = "\252", ["ь"] = "\253",
+    ["э"] = "\254", ["ю"] = "\255", ["я"] = "\13"
+}
+
+-- ПРАВИЛЬНЫЙ ИТЕРАТОР UTF-8
+local function utf8_iter(str)
+    local i = 1
+    return function()
+        if i > #str then return nil end
+        local c = string.byte(str, i)
+        local len = (c < 0x80) and 1 or (c < 0xE0) and 2 or (c < 0xF0) and 3 or 4
+        local char = string.sub(str, i, i + len - 1)
+        i = i + len
+        return char
+    end
+end
+
+-- ФУНКЦИЯ ПЕРЕВОДА T()
+local function T(str)
+    if type(str) ~= "string" then return str end
+    local result = {}
+    for char in utf8_iter(str) do
+        table.insert(result, cyrillic_map[char] or char)
+    end
+    return table.concat(result)
+end
+
+local speakers = { peripheral.find("speaker") }
+if #speakers == 0 then
+    error(T("Динамики не найдены. Подключите колонку."), 0)
+end
+
+function redrawScreen()
+    if waiting_for_input then return end
+    term.setCursorBlink(false)
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1,1)
+    term.setBackgroundColor(colors.gray)
+    term.clearLine()
+    
+    local tabs = {T(" Сейчас играет "), T(" Поиск ")}
+    for i=1,#tabs do
+        if tab == i then
+            term.setTextColor(colors.black); term.setBackgroundColor(colors.white)
+        else
+            term.setTextColor(colors.white); term.setBackgroundColor(colors.gray)
+        end
+        term.setCursorPos((math.floor((width/#tabs)*(i-0.5)))-math.ceil(#tabs[i]/2)+1, 1)
+        term.write(tabs[i])
+    end
+
+    if tab == 1 then drawNowPlaying() elseif tab == 2 then drawSearch() end
+end
+
+function drawNowPlaying()
+    if now_playing ~= nil then
+        term.setBackgroundColor(colors.black)
+        term.setCursorPos(2,3); term.setTextColor(colors.white); term.write(T(now_playing.name))
+        term.setCursorPos(2,4); term.setTextColor(colors.lightGray); term.write(T(now_playing.artist))
+    else
+        term.setCursorPos(2,3); term.setTextColor(colors.lightGray); term.write(T("Ничего не играет"))
+    end
+
+    if is_loading then
+        term.setTextColor(colors.gray); term.setCursorPos(2,5); term.write(T("Загрузка..."))
+    elseif is_error then
+        term.setTextColor(colors.red); term.setCursorPos(2,5); term.write(T("Ошибка сети"))
+    end
+
+    term.setBackgroundColor(colors.gray); term.setTextColor(colors.white)
+    term.setCursorPos(2, 6); term.write(playing and T(" Стоп ") or T(" Играть "))
+    term.setCursorPos(11, 6); term.write(T(" Пропуск "))
+end
+
+function drawSearch()
+    paintutils.drawFilledBox(2,3,width-1,5,colors.lightGray)
+    term.setBackgroundColor(colors.lightGray); term.setTextColor(colors.black)
+    term.setCursorPos(3,4); term.write(last_search and T(last_search) or T("Поиск..."))
+
+    if search_results ~= nil then
+        term.setBackgroundColor(colors.black)
+        for i=1,#search_results do
+            term.setCursorPos(2,7+(i-1)*2); term.setTextColor(colors.white); term.write(T(search_results[i].name))
+            term.setCursorPos(2,8+(i-1)*2); term.setTextColor(colors.lightGray); term.write(T(search_results[i].artist))
+        end
+    elseif last_search_url ~= nil then
+        term.setCursorPos(2,7); term.setTextColor(colors.lightGray); term.write(T("Поиск..."))
+    end
+
+    if in_search_result then
+        term.setBackgroundColor(colors.black); term.clear()
+        term.setCursorPos(2,2); term.setTextColor(colors.white); term.write(T(search_results[clicked_result].name))
+        term.setCursorPos(2,6); term.setBackgroundColor(colors.gray); term.write(T("Играть сейчас"))
+        term.setCursorPos(2,13); term.write(T("Назад"))
+    end
+end
+
+function uiLoop()
+    redrawScreen()
+    while true do
+        if waiting_for_input then
+            term.setCursorPos(3,4); term.setBackgroundColor(colors.white); term.setTextColor(colors.black)
+            local input = read()
+            if #input > 0 then
+                last_search = input
+                last_search_url = api_base_url .. "?v=" .. version .. "&search=" .. textutils.urlEncode(input)
+                http.request(last_search_url)
+                search_results = nil
+            end
+            waiting_for_input = false; os.queueEvent("redraw_screen")
+        else
+            local ev, btn, x, y = os.pullEvent()
+            if ev == "mouse_click" and btn == 1 then
+                if y == 1 then
+                    tab = (x < width/2) and 1 or 2
+                    redrawScreen()
+                elseif tab == 2 and not in_search_result then
+                    if y >= 3 and y <= 5 then waiting_for_input = true; redrawScreen()
+                    elseif search_results then
+                        for i=1,#search_results do
+                            if y == 7+(i-1)*2 or y == 8+(i-1)*2 then
+                                clicked_result = i; in_search_result = true; redrawScreen()
+                            end
+                        end
+                    end
+                elseif tab == 2 and in_search_result then
+                    if y == 6 then
+                        for _, s in ipairs(speakers) do s.stop() end
+                        now_playing = search_results[clicked_result]; playing = true; in_search_result = false
+                        playing_id = nil; os.queueEvent("audio_update")
+                    elseif y == 13 then in_search_result = false; redrawScreen() end
+                elseif tab == 1 then
+                    if y == 6 then
+                        if x >= 2 and x < 10 then -- Play/Stop
+                            playing = not playing
+                            if not playing then for _, s in ipairs(speakers) do s.stop() end end
+                            os.queueEvent("audio_update")
+                        elseif x >= 11 and x < 20 then -- Skip
+                            if #queue > 0 then now_playing = table.remove(queue,1) else now_playing = nil; playing = false end
+                            playing_id = nil; os.queueEvent("audio_update")
+                        end
+                    end
+                end
+            elseif ev == "redraw_screen" then redrawScreen() end
+        end
+    end
+end
+
+function audioLoop()
+    while true do
+        if playing and now_playing then
+            if playing_id ~= now_playing.id then
+                playing_id = now_playing.id
+                last_download_url = api_base_url .. "?v=" .. version .. "&id=" .. textutils.urlEncode(playing_id)
+                http.request({url = last_download_url, binary = true})
+                is_loading = true; os.queueEvent("redraw_screen")
+            elseif playing_status == 1 then
+                local chunk = player_handle.read(size)
+                if not chunk then
+                    if #queue > 0 then now_playing = table.remove(queue,1); playing_id = nil
+                    else playing = false; now_playing = nil end
+                    os.queueEvent("redraw_screen")
+                else
+                    buffer = decoder(chunk)
+                    for _, speaker in ipairs(speakers) do speaker.playAudio(buffer, volume) end
+                    repeat os.pullEvent("speaker_audio_empty") until true
+                end
+            end
+        end
+        os.pullEvent("audio_update")
+    end
+end
+
+function httpLoop()
+    while true do
+        local event, url, handle = os.pullEvent()
+        if event == "http_success" then
+            if url == last_search_url then
+                search_results = textutils.unserialiseJSON(handle.readAll())
+                os.queueEvent("redraw_screen")
+            elseif url == last_download_url then
+                player_handle = handle; is_loading = false; start = handle.read(4)
+                size = 16380; playing_status = 1; os.queueEvent("audio_update")
+            end
+        elseif event == "http_failure" then
+            is_loading = false; is_error = true; os.queueEvent("redraw_screen")
+        end
+    end
+end
+
+parallel.waitForAny(uiLoop, audioLoop, httpLoop)
