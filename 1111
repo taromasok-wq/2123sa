@@ -1,0 +1,119 @@
+-- === CONFIGURATION ===
+local API_KEY = "AIzaSyAocKW8t9P8N-UeV4VyTp8Kj3fmVC0UXqw"
+local MODEL = "gemini-3-flash-preview"
+
+-- TTS Config (Используем твой рабочий метод)
+-- Голос 'en-gb-x-gdb-network' звучит как строгая британская леди
+-- Используем более стабильный женский голос (Standard)
+local VOICE = "en-US-Standard-C" 
+local TTS_BASE_URL = "https://music.madefor.cc/tts?voice=" .. VOICE .. "&text="
+
+-- Peripherals
+local speaker = peripheral.find("speaker")
+local dfpwm = require("cc.audio.dfpwm")
+
+if not speaker then 
+    error("Madam G needs a Speaker to talk!", 0) 
+end
+
+-- 1. Function to play audio (based on your snippet)
+local function speak(message)
+    -- Убираем переносы строк и странные символы, которые ломают URL
+    local cleanMessage = message:gsub("\n", " "):gsub("[%c]", "")
+    
+    local url = TTS_BASE_URL .. textutils.urlEncode(cleanMessage)
+    local response, err = http.get { url = url, binary = true }
+    
+    if not response then
+        -- Если Standard голос не сработал, пробуем вообще без указания голоса (дефолт)
+        local fallbackUrl = "https://music.madefor.cc/tts?text=" .. textutils.urlEncode(cleanMessage)
+        response, err = http.get { url = fallbackUrl, binary = true }
+    end
+
+    if not response then
+        print("Voice Error: " .. tostring(err))
+        return
+    end
+
+    local decoder = dfpwm.make_decoder()
+    while true do
+        local chunk = response.read(16 * 1024)
+        if not chunk then break end
+
+        local buffer = decoder(chunk)
+        while not speaker.playAudio(buffer) do
+            os.pullEvent("speaker_audio_empty")
+        end
+    end
+    response.close()
+end
+
+-- 2. Function to get text from Gemini with Retry Logic
+local function askGemini(prompt)
+    local url = "https://generativelanguage.googleapis.com/v1beta/models/" .. MODEL .. ":generateContent?key=" .. API_KEY
+    local body = {
+        systemInstruction = {
+            parts = {{ text = "You are 'Madam G', a gritty underworld madam. You are bossy, cynical, and use street slang. You call the user 'kid'. IMPORTANT: Answer in English only. Keep answers under 15 words so the audio stays fast." }}
+        },
+        contents = {{ role = "user", parts = {{ text = prompt }} }}
+    }
+
+    local maxRetries = 3
+    local waitTime = 5 -- Начальное время ожидания в секундах
+
+    for i = 1, maxRetries do
+        local response, err = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+        
+        -- Проверяем успех ответа
+        if response then
+            local responseCode = response.getResponseCode()
+            
+            -- Если получили 429 - ждем и повторяем
+            if responseCode == 429 then
+                print("Rate limit hit! Madam G is annoyed... Waiting " .. waitTime .. "s...")
+                os.sleep(waitTime)
+                waitTime = waitTime * 2 -- Увеличиваем время ожидания в следующий раз (экспоненциальная задержка)
+                response.close()
+            else
+                -- Если код 200 или любой другой успех, парсим данные
+                local data = textutils.unserializeJSON(response.readAll())
+                response.close()
+
+                if data and data.candidates then
+                    return data.candidates[1].content.parts[1].text
+                else
+                    return "Madam G is confused by the response."
+                end
+            end
+        else
+            return "Connection error: " .. tostring(err)
+        end
+    end
+
+    return "Madam G is too busy right now (Rate Limit Exceeded)."
+end
+
+-- === MAIN INTERFACE ===
+term.clear()
+term.setCursorPos(1,1)
+
+while true do
+    term.setTextColor(colors.white)
+    write("You: ")
+    local input = read()
+    
+    if input == "exit" then break end
+
+    -- Get Text
+    term.setTextColor(colors.magenta)
+    print("R is thinking...")
+    local answer = askGemini(input)
+    
+    -- Print Text
+    print("\nR: " .. answer)
+    
+    -- Play Voice
+    speak(answer)
+    
+    print("--------------------------")
+end
