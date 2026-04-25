@@ -1,0 +1,110 @@
+-- === SETTINGS ===
+-- Paste your API key inside the quotes!
+local API_KEY = "AIzaSyCntT7fakpZSIxkLmcUspeYFnD9PvZTuK8"
+local MODEL = "gemini-3-flash-preview"
+local URL = "https://generativelanguage.googleapis.com/v1beta/models/" .. MODEL .. ":generateContent?key=" .. API_KEY
+
+-- Check if HTTP is enabled
+if not http then
+    print("Error: HTTP API is disabled in ComputerCraft config!")
+    return
+end
+
+-- Chat history for context
+local chat_history = {}
+
+-- Function to send request to Gemini
+local function askGemini(prompt)
+    table.insert(chat_history, {
+        role = "user",
+        parts = {{ text = prompt }}
+    })
+
+    -- We add a system instruction to force Gemini to use English only
+    -- because ComputerCraft does not support Cyrillic/Unicode characters.
+local body = {
+        systemInstruction = {
+            parts = {{ text = "You are a helpful AI assistant (Gemini). The user is talking to you through a Minecraft terminal. You MUST answer their questions naturally. IMPORTANT: The terminal ONLY supports standard English ASCII characters. You MUST NEVER use Cyrillic, Russian, or any other non-English characters. Always answer in English, and DO NOT pretend to be a command line OS."}}
+        },
+        contents = chat_history
+    }
+    
+    local jsonBody = textutils.serializeJSON(body)
+    local headers = { ["Content-Type"] = "application/json" }
+
+    -- Send POST request
+    local response, err = http.post(URL, jsonBody, headers)
+    
+    if not response then
+        table.remove(chat_history)
+        return "Network Error: " .. tostring(err)
+    end
+    
+    local responseText = response.readAll()
+    response.close()
+    
+    local data = textutils.unserializeJSON(responseText)
+    
+    if data.error then
+        table.remove(chat_history)
+        return "API Error: " .. tostring(data.error.message)
+    end
+    
+    if data.candidates and data.candidates[1] and data.candidates[1].content then
+        local answer = data.candidates[1].content.parts[1].text
+        
+        table.insert(chat_history, {
+            role = "model",
+            parts = {{ text = answer }}
+        })
+        
+        return answer
+    else
+        table.remove(chat_history)
+        return "Unknown response format from server."
+    end
+end
+
+-- === CHAT INTERFACE ===
+term.clear()
+term.setCursorPos(1, 1)
+term.setTextColor(colors.lightBlue)
+print("=================================")
+print("       Gemini AI Chat            ")
+print("=================================")
+term.setTextColor(colors.gray)
+print("Type 'exit' to quit.")
+print("Type 'clear' to reset memory.\n")
+term.setTextColor(colors.white)
+
+while true do
+    -- User input
+    term.setTextColor(colors.yellow)
+    write("You: ")
+    term.setTextColor(colors.white)
+    
+    local input = read()
+    
+    if input == "exit" then
+        print("Shutting down...")
+        break
+    elseif input == "clear" then
+        chat_history = {}
+        term.setTextColor(colors.green)
+        print("[Chat history cleared]\n")
+        term.setTextColor(colors.white)
+    elseif input ~= "" then
+        term.setTextColor(colors.gray)
+        print("Gemini is typing...")
+        
+        -- Get response
+        local answer = askGemini(input)
+        
+        -- Print response
+        term.setTextColor(colors.cyan)
+        print("\nGemini: ")
+        term.setTextColor(colors.white)
+        print(answer)
+        print(string.rep("-", 30))
+    end
+end
