@@ -1,0 +1,117 @@
+-- === CONFIGURATION ===
+-- API ключ больше не нужен!
+local MODEL = "mistral" -- Можно использовать "openai", "mistral" или "llama"
+
+-- TTS Config 
+local VOICE = "en-US-Standard-C" 
+local TTS_BASE_URL = "https://music.madefor.cc/tts?voice=" .. VOICE .. "&text="
+
+-- Peripherals
+local speaker = peripheral.find("speaker")
+local dfpwm = require("cc.audio.dfpwm")
+
+if not speaker then 
+    error("Madam G needs a Speaker to talk!", 0) 
+end
+
+-- 1. Function to play audio
+local function speak(message)
+    -- Убираем переносы строк и странные символы
+    local cleanMessage = message:gsub("\n", " "):gsub("[%c]", "")
+    
+    local url = TTS_BASE_URL .. textutils.urlEncode(cleanMessage)
+    local response, err = http.get { url = url, binary = true }
+    
+    if not response then
+        -- Фоллбэк, если Standard голос не сработал
+        local fallbackUrl = "https://music.madefor.cc/tts?text=" .. textutils.urlEncode(cleanMessage)
+        response, err = http.get { url = fallbackUrl, binary = true }
+    end
+
+    if not response then
+        print("Voice Error: " .. tostring(err))
+        return
+    end
+
+    local decoder = dfpwm.make_decoder()
+    while true do
+        local chunk = response.read(16 * 1024)
+        if not chunk then break end
+
+        local buffer = decoder(chunk)
+        while not speaker.playAudio(buffer) do
+            os.pullEvent("speaker_audio_empty")
+        end
+    end
+    response.close()
+end
+
+-- 2. Function to get text from FREE AI (Pollinations.ai)
+local function askAI(prompt)
+    local url = "https://text.pollinations.ai/"
+    local body = {
+        messages = {
+            { role = "system", content = "You are 'Madam G', a gritty underworld madam. You are bossy, cynical, and use street slang. You call the user 'kid'. IMPORTANT: Answer in English only. Keep answers under 15 words so the audio stays fast." },
+            { role = "user", content = prompt }
+        },
+        model = MODEL
+    }
+
+    local maxRetries = 3
+    local waitTime = 3 
+
+    for i = 1, maxRetries do
+        local response, err = http.post(url, textutils.serializeJSON(body), {["Content-Type"] = "application/json"})
+        
+        if response then
+            local responseCode = response.getResponseCode()
+            
+            if responseCode == 429 then
+                print("Network busy! Madam G is annoyed... Waiting " .. waitTime .. "s...")
+                os.sleep(waitTime)
+                waitTime = waitTime * 2
+                response.close()
+            else
+                -- Pollinations возвращает чистый текст в ответе, никакой возни с JSON!
+                local text = response.readAll()
+                response.close()
+
+                if text and text ~= "" then
+                    return text
+                else
+                    return "Madam G is confused."
+                end
+            end
+        else
+            print("Connection error: " .. tostring(err))
+            os.sleep(waitTime)
+        end
+    end
+
+    return "Madam G is too busy right now."
+end
+
+-- === MAIN INTERFACE ===
+term.clear()
+term.setCursorPos(1,1)
+
+while true do
+    term.setTextColor(colors.white)
+    write("You: ")
+    local input = read()
+    
+    if input == "exit" then break end
+
+    -- Get Text
+    term.setTextColor(colors.magenta)
+    print("Madam G is thinking...")
+    local answer = askAI(input)
+    
+    -- Print Text
+    print("\nMadam G: " .. answer)
+    
+    -- Play Voice
+    speak(answer)
+    
+    print("--------------------------")
+end
